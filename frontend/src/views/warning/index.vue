@@ -67,6 +67,8 @@
       <span>共 {{ total }} 条预警阈值记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
+
+    <QualityChecklist ref="checklistRef" />
   </section>
 </template>
 
@@ -80,6 +82,7 @@ import {
   runAction as applyAction,
 } from '@/api/local-service'
 import type { EntryRow } from '@/data/types'
+import QualityChecklist from '@/views/waterquality/ChecklistPanel.vue'
 
 const meta = moduleMeta('warning')
 const columns = ["配置编号", "站点编号", "监测类型", "蓝色阈值", "黄色阈值", "橙色阈值", "红色阈值", "生效状态"]
@@ -90,6 +93,7 @@ const stats = [{"label": "配置总数", "value": 0}, {"label": "已生效数", 
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const checklistRef = ref<InstanceType<typeof QualityChecklist> | null>(null)
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
 const statusSummary = computed(() =>
@@ -120,6 +124,7 @@ function runAction(action: string, row: EntryRow) {
     return
   }
   reload()
+  checklistRef.value?.reload()
 }
 
 function reload() {

@@ -86,13 +86,17 @@ export function downloadEntries(key: string): void {
 
 export function loadOverview(): OverviewResult {
   const rows = allRows()
+  // 水质核查清单是水质模块的附属表，计数并入水质模块，不作为独立模块重复统计。
   const modules = [...MODULE_BY_KEY.values()].map((meta) => {
     const entries = rows[meta.key] ?? []
+    const extras = meta.key === 'waterquality' ? rows['waterqualityChecklist'] ?? [] : []
     return {
       name: meta.name,
       created: entries.length,
-      pending: entries.filter((row) => row.pending).length,
-      abnormal: entries.filter((row) => row.abnormal).length,
+      pending: entries.filter((row) => row.pending).length
+        + extras.filter((row) => row.pending).length,
+      abnormal: entries.filter((row) => row.abnormal).length
+        + extras.filter((row) => row.abnormal).length,
     }
   })
   const cards = [
