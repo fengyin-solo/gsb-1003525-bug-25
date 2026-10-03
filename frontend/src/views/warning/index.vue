@@ -63,6 +63,8 @@
       </tbody>
     </table>
 
+    <CheckListPanel :items="qualityCheckItems" />
+
     <footer class="page-foot">
       <span>共 {{ total }} 条预警阈值记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
@@ -73,13 +75,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 
+import CheckListPanel from '@/views/waterquality/components/CheckListPanel.vue'
 import {
   downloadEntries,
   listEntries,
   moduleMeta,
   runAction as applyAction,
 } from '@/api/local-service'
+import { qualityChecks } from '@/data/quality/service'
 import type { EntryRow } from '@/data/types'
+import type { QualityCheckItem } from '@/data/quality/types'
 
 const meta = moduleMeta('warning')
 const columns = ["配置编号", "站点编号", "监测类型", "蓝色阈值", "黄色阈值", "橙色阈值", "红色阈值", "生效状态"]
@@ -128,10 +133,14 @@ function reload() {
     const payload = listEntries(meta.key, filters.value)
     rows.value = payload.items
     total.value = payload.total
+    // 超标预警核查清单由水质复核流程驱动，这里只读同一数据源，状态始终一致。
+    qualityCheckItems.value = qualityChecks()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '预警阈值列表读取失败'
   }
 }
+
+const qualityCheckItems = ref<QualityCheckItem[]>([])
 
 onMounted(reload)
 </script>

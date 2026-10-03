@@ -1,0 +1,210 @@
+import type { QualityCheckItem, QualityReport, QualityState } from './types'
+
+// 水质领域示例数据：沿「已采样 → 检测中 → 已出报告（含超标）→ 复核中 → 已复核」铺开，
+// 另保留一份缺复核人的历史已复核报告，用于演示历史数据补齐（补齐方式见 store 规范化逻辑）。
+
+function item(name: string, reading: string, limit: string, exceeded: boolean | null) {
+  return { name, reading, limit, exceeded }
+}
+
+export const SEED_QUALITY_REPORTS: QualityReport[] = [
+  {
+    id: 1,
+    code: 'WQ-2026-0901',
+    station: '沙河闸断面',
+    sampledAt: '2026-09-01 08:30',
+    inspector: '李采样',
+    status: 'sampled',
+    items: [],
+    abnormal: false,
+    review: null,
+    reviewRound: 0,
+    history: [],
+    revision: 1,
+    createdAt: '2026-09-01 09:00',
+    updatedAt: '2026-09-01 09:00',
+  },
+  {
+    id: 2,
+    code: 'WQ-2026-0902',
+    station: '东河大桥断面',
+    sampledAt: '2026-09-02 09:10',
+    inspector: '王检测',
+    status: 'testing',
+    items: [item('高锰酸盐指数', '4.2', '6', false)],
+    abnormal: false,
+    review: null,
+    reviewRound: 0,
+    history: [],
+    revision: 2,
+    createdAt: '2026-09-02 09:40',
+    updatedAt: '2026-09-02 10:20',
+  },
+  {
+    id: 3,
+    code: 'WQ-2026-0903',
+    station: '南湖入口',
+    sampledAt: '2026-09-03 08:00',
+    inspector: '王检测',
+    status: 'reported',
+    items: [
+      item('高锰酸盐指数', '3.8', '6', false),
+      item('氨氮', '0.42', '1.0', false),
+    ],
+    abnormal: false,
+    review: null,
+    reviewRound: 0,
+    history: [],
+    revision: 1,
+    createdAt: '2026-09-03 09:00',
+    updatedAt: '2026-09-03 11:00',
+  },
+  {
+    id: 4,
+    code: 'WQ-2026-0904',
+    station: '西河排口',
+    sampledAt: '2026-09-04 07:45',
+    inspector: '赵化验',
+    status: 'reviewing',
+    items: [
+      item('高锰酸盐指数', '8.6', '6', true),
+      item('氨氮', '1.84', '1.0', true),
+      item('总磷', '0.15', '0.2', false),
+    ],
+    abnormal: true,
+    review: {
+      reviewer: '孙复核',
+      opinion: '复测中，氨氮读数待确认',
+      findings: { 高锰酸盐指数: '退回' },
+      submittedAt: '',
+    },
+    reviewRound: 1,
+    history: [],
+    revision: 4,
+    createdAt: '2026-09-04 08:30',
+    updatedAt: '2026-09-04 15:10',
+  },
+  {
+    id: 5,
+    code: 'WQ-2026-0905',
+    station: '北渠交汇口',
+    sampledAt: '2026-09-05 10:00',
+    inspector: '赵化验',
+    status: 'reviewed',
+    items: [
+      item('溶解氧', '6.1', '5', false),
+      item('化学需氧量', '16.8', '20', false),
+    ],
+    abnormal: false,
+    review: {
+      reviewer: '孙复核',
+      opinion: '读数与留痕一致，同意报告结论',
+      findings: { 溶解氧: '通过', 化学需氧量: '通过' },
+      submittedAt: '2026-09-05 16:30',
+    },
+    reviewRound: 1,
+    history: [
+      {
+        round: 1,
+        verdict: '通过',
+        reviewer: '孙复核',
+        opinion: '读数与留痕一致，同意报告结论',
+        submittedAt: '2026-09-05 16:30',
+      },
+    ],
+    revision: 3,
+    createdAt: '2026-09-05 10:40',
+    updatedAt: '2026-09-05 16:30',
+  },
+  {
+    // 历史已复核报告：缺复核人（reviewer 为空串），由 store 规范化时补齐，不伪造最终结论。
+    id: 6,
+    code: 'WQ-2025-1108',
+    station: '老河口断面',
+    sampledAt: '2025-11-08 09:30',
+    inspector: '赵化验',
+    status: 'reviewed',
+    items: [
+      item('高锰酸盐指数', '5.4', '6', false),
+      item('氨氮', '1.35', '1.0', true),
+    ],
+    abnormal: true,
+    review: {
+      reviewer: '',
+      opinion: '历史系统迁移，复核结论缺失',
+      findings: {},
+      submittedAt: '2025-11-08 17:00',
+    },
+    reviewRound: 1,
+    history: [],
+    revision: 2,
+    createdAt: '2025-11-08 10:00',
+    updatedAt: '2025-11-08 17:00',
+  },
+  {
+    // 被退回过一次后重新出具、再次复核通过的报告：验证「退回只清中间结论，原始读数留痕」。
+    id: 7,
+    code: 'WQ-2026-0818',
+    station: '南支港',
+    sampledAt: '2026-08-18 08:10',
+    inspector: '王检测',
+    status: 'reviewed',
+    items: [item('氨氮', '0.88', '1.0', false)],
+    abnormal: false,
+    review: {
+      reviewer: '孙复核',
+      opinion: '复测后读数一致',
+      findings: { 氨氮: '通过' },
+      submittedAt: '2026-08-20 10:00',
+    },
+    reviewRound: 2,
+    history: [
+      {
+        round: 1,
+        verdict: '退回',
+        reviewer: '孙复核',
+        opinion: '样品编号存疑，请重新核对',
+        submittedAt: '2026-08-19 09:20',
+      },
+      {
+        round: 2,
+        verdict: '通过',
+        reviewer: '孙复核',
+        opinion: '复测后读数一致',
+        submittedAt: '2026-08-20 10:00',
+      },
+    ],
+    revision: 6,
+    createdAt: '2026-08-18 08:40',
+    updatedAt: '2026-08-20 10:00',
+  },
+]
+
+export const SEED_QUALITY_CHECKS: QualityCheckItem[] = [
+  {
+    id: 'check-4',
+    reportId: 4,
+    code: 'WQ-2026-0904',
+    station: '西河排口',
+    exceededItems: ['高锰酸盐指数', '氨氮'],
+    status: 'pending',
+    note: '报告出具时生成，等待复核结论',
+    updatedAt: '2026-09-04 11:20',
+  },
+  {
+    id: 'check-6',
+    reportId: 6,
+    code: 'WQ-2025-1108',
+    station: '老河口断面',
+    exceededItems: ['氨氮'],
+    status: 'verified',
+    note: '历史报告复核通过（复核人系统补齐）',
+    updatedAt: '2025-11-08 17:00',
+  },
+]
+
+export const SEED_QUALITY_STATE: QualityState = {
+  reports: SEED_QUALITY_REPORTS,
+  checks: SEED_QUALITY_CHECKS,
+  migrated: true,
+}

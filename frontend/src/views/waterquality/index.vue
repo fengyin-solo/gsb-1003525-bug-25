@@ -3,11 +3,10 @@
     <header class="page-head">
       <div>
         <h2>水质检测管理</h2>
-        <p class="page-desc">维护水质检测报告，围绕报告编号、采样站点、采样时间、检测项目做登记、筛选与状态流转。</p>
+        <p class="page-desc">采样 → 检测 → 出具报告（锁定原始读数）→ 发起复核 → 预警核查，全链路留痕。</p>
       </div>
       <div class="page-actions">
-        <button class="btn primary" type="button" @click="openCreate">登记水质检测报告</button>
-        <button class="btn" type="button" @click="exportRows">导出水质检测清单</button>
+        <button class="btn primary" type="button" @click="registerOpen = true">登记采样</button>
       </div>
     </header>
 
@@ -25,9 +24,13 @@
     </p>
 
     <form class="filter-bar" @submit.prevent="reload">
-      <label v-for="field in filterFields" :key="field" class="filter-item">
-        <span>{{ field }}</span>
-        <input v-model="filters[field]" :placeholder="`按${field}检索`" />
+      <label class="filter-item">
+        <span>报告编号/站点</span>
+        <input v-model="keyword" placeholder="按报告编号或采样站点检索" />
+      </label>
+      <label class="filter-item">
+        <span>报告状态</span>
+        <input v-model="statusKeyword" placeholder="如 复核中 / 已复核" />
       </label>
       <button class="btn" type="submit">查询</button>
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
@@ -36,101 +39,202 @@
     <table class="data-table">
       <thead>
         <tr>
-          <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>报告编号</th>
+          <th>采样站点</th>
+          <th>采样时间</th>
+          <th>检测项目与原始读数</th>
+          <th>原始结论（出具当时）</th>
+          <th>检测人</th>
+          <th>复核人</th>
           <th>当前状态</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
-          <td>{{ row.status }}</td>
+        <tr v-for="row in filteredRows" :key="row.id">
+          <td>{{ row.code }}</td>
+          <td>{{ row.station }}</td>
+          <td>{{ row.sampledAt }}</td>
+          <td>{{ itemsSummary(row) }}</td>
+          <td>
+            <span class="result-tag" :class="reportResultKind(row)">
+              {{ row.status === 'sampled' || row.status === 'testing' ? '—' : resultLabel(row) }}
+            </span>
+          </td>
+          <td>{{ row.inspector || '—' }}</td>
+          <td>{{ reviewerText(row) }}</td>
+          <td><span class="badge" :class="statusBadge(row)">{{ STATUS_LABEL[row.status] }}</span></td>
           <td class="row-actions">
+            <button v-if="row.status === 'sampled'" class="link" type="button" @click="doBeginTesting(row)">开始检测</button>
+            <button v-if="row.status === 'testing'" class="link" type="button" @click="openResults(row)">录入读数/出报告</button>
             <button
-              v-for="action in actions"
-              :key="action"
+              v-if="row.status === 'reported' || row.status === 'reviewed'"
               class="link"
               type="button"
-              @click="runAction(action, row)"
+              @click="doOpenReview(row)"
             >
-              {{ action }}
+              发起复核
             </button>
+            <button v-if="row.status === 'reviewing'" class="link" type="button" @click="openReviewDialog(row)">继续复核</button>
           </td>
         </tr>
-        <tr v-if="!rows.length">
-          <td :colspan="columns.length + 2" class="empty-state">暂无水质检测数据，可先登记水质检测报告</td>
+        <tr v-if="!filteredRows.length">
+          <td colspan="9" class="empty-state">暂无符合条件的水质检测报告，可先登记采样</td>
         </tr>
       </tbody>
     </table>
 
+    <CheckListPanel :items="checks" show-report-action @review="goReview" />
+
     <footer class="page-foot">
-      <span>共 {{ total }} 条水质检测记录</span>
+      <span>共 {{ reports.length }} 份水质检测报告</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
+      <span v-else-if="noticeMessage" style="color:#027a48;">{{ noticeMessage }}</span>
     </footer>
+
+    <RegisterDialog v-if="registerOpen" @close="registerOpen = false" @done="onDone" />
+    <ResultsDialog v-if="resultsTarget" :report="resultsTarget" @close="resultsTarget = null" @done="onDone" />
+    <ReviewDialog v-if="reviewTarget" :report="reviewTarget" @close="reviewTarget = null" @done="onDone" />
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 
+import CheckListPanel from './components/CheckListPanel.vue'
+import RegisterDialog from './components/RegisterDialog.vue'
+import ResultsDialog from './components/ResultsDialog.vue'
+import ReviewDialog from './components/ReviewDialog.vue'
 import {
-  downloadEntries,
-  listEntries,
-  moduleMeta,
-  runAction as applyAction,
-} from '@/api/local-service'
-import type { EntryRow } from '@/data/types'
+  STATUS_LABEL,
+  itemsSummary,
+  reportResultKind,
+  resultLabel,
+  reviewerText,
+} from '@/data/quality/display'
+import { beginTesting, getReport, openReview, qualityChecks, qualityReports } from '@/data/quality/service'
+import type { QualityCheckItem, QualityReport, QualityStatus } from '@/data/quality/types'
 
-const meta = moduleMeta('waterquality')
-const columns = ["报告编号", "采样站点", "采样时间", "检测项目", "检测值", "标准上限", "检测人", "报告状态"]
-const actions = ["开始检测", "出具报告", "发起复核"]
-const statuses = ["已采样", "检测中", "已出报告", "超标", "已复核"]
-const stats = [{"label": "本月检测次数", "value": 0}, {"label": "超标报告数", "value": 0}, {"label": "检测中样本", "value": 0}]
-
-const rows = ref<EntryRow[]>([])
-const total = ref(0)
+const reports = ref<QualityReport[]>([])
+const checks = ref<QualityCheckItem[]>([])
+const keyword = ref('')
+const statusKeyword = ref('')
 const errorMessage = ref('')
-const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const noticeMessage = ref('')
+
+const registerOpen = ref(false)
+const resultsTarget = ref<QualityReport | null>(null)
+const reviewTarget = ref<QualityReport | null>(null)
+
+const statusLegend: Array<{ key: QualityStatus; label: string }> = [
+  { key: 'sampled', label: '已采样' },
+  { key: 'testing', label: '检测中' },
+  { key: 'reported', label: '已出报告' },
+  { key: 'reviewing', label: '复核中' },
+  { key: 'reviewed', label: '已复核' },
+]
+
 const statusSummary = computed(() =>
-  statuses.map((status: string) => ({
-    status,
-    count: rows.value.filter((row) => String(row.status) === status).length,
+  statusLegend.map((item) => ({
+    status: item.label,
+    count: reports.value.filter((row) => row.status === item.key).length,
   })),
 )
 
+const stats = computed(() => [
+  { label: '本月检测次数', value: reports.value.filter((row) => row.status !== 'sampled').length },
+  { label: '超标报告数', value: new Set(checks.value.map((item) => item.reportId)).size },
+  { label: '检测中样本', value: reports.value.filter((row) => row.status === 'testing').length },
+])
+
+const filteredRows = computed(() => {
+  const word = keyword.value.trim()
+  const statusWord = statusKeyword.value.trim()
+  return reports.value.filter((row) => {
+    const hitWord = !word || row.code.includes(word) || row.station.includes(word)
+    const hitStatus = !statusWord || STATUS_LABEL[row.status].includes(statusWord) || row.status.includes(statusWord)
+    return hitWord && hitStatus
+  })
+})
+
+function reload() {
+  errorMessage.value = ''
+  reports.value = qualityReports()
+  checks.value = qualityChecks()
+}
+
 function resetFilters() {
-  filters.value = {}
+  keyword.value = ''
+  statusKeyword.value = ''
   reload()
 }
 
-function exportRows() {
-  downloadEntries(meta.key)
-}
-
-function openCreate() {
-  errorMessage.value = '水质检测报告登记入口尚未接入审批流'
-}
-
-function runAction(action: string, row: EntryRow) {
+function onDone(message: string) {
+  registerOpen.value = false
+  resultsTarget.value = null
+  reviewTarget.value = null
+  reload()
+  noticeMessage.value = message
   errorMessage.value = ''
-  const result = applyAction(meta.key, Number(row.id), action)
+}
+
+function doBeginTesting(row: QualityReport) {
+  const result = beginTesting(row)
+  applyResult(result)
+}
+
+function openResults(row: QualityReport) {
+  errorMessage.value = ''
+  resultsTarget.value = getReport(row.id) ?? row
+}
+
+function doOpenReview(row: QualityReport) {
+  // 发起复核只建立复核草稿（中间结论），不触碰原始读数。
+  const result = openReview(row)
   if (!result.ok) {
     errorMessage.value = result.message
     return
   }
+  const fresh = getReport(row.id)
+  if (fresh) {
+    reviewTarget.value = fresh
+  }
   reload()
 }
 
-function reload() {
+function openReviewDialog(row: QualityReport) {
   errorMessage.value = ''
-  try {
-    const payload = listEntries(meta.key, filters.value)
-    rows.value = payload.items
-    total.value = payload.total
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '水质检测列表读取失败'
+  reviewTarget.value = getReport(row.id) ?? row
+}
+
+function goReview(reportId: number) {
+  const report = getReport(reportId)
+  if (report) {
+    reviewTarget.value = report
   }
+}
+
+function applyResult(result: { ok: boolean; message: string }) {
+  if (!result.ok) {
+    noticeMessage.value = ''
+    errorMessage.value = result.message
+    return
+  }
+  reload()
+  noticeMessage.value = result.message
+}
+
+function statusBadge(row: QualityReport): string {
+  if (row.status === 'reviewed') {
+    return 'normal'
+  }
+  if (row.status === 'reviewing') {
+    return 'pending'
+  }
+  if (row.abnormal && (row.status === 'reported')) {
+    return 'abnormal'
+  }
+  return 'neutral'
 }
 
 onMounted(reload)
